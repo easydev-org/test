@@ -1,0 +1,10 @@
+name: slow-probe
+on:
+  workflow_dispatch:
+jobs:
+  slow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: tick
+        run: |
+          for i in $(seq 1 30); do echo "tick $i"; sleep 2; done
