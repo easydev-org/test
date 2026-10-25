@@ -1,0 +1,18 @@
+name: live-log-probe
+# A workflow that prints on a timer, so the log endpoints can be probed WHILE it runs.
+#
+# Each step echoes a timestamped line every 3 seconds. That matters: if step-level logs are
+# readable mid-run, those lines are how we will know — an empty or truncated log is
+# indistinguishable from "not available yet".
+on:
+  workflow_dispatch:
+jobs:
+  slow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: step-one
+        run: |
+          for i in $(seq 1 20); do echo "step-one tick $i at $(date -u +%H:%M:%S)"; sleep 3; done
+      - name: step-two
+        run: |
+          for i in $(seq 1 20); do echo "step-two tick $i at $(date -u +%H:%M:%S)"; sleep 3; done
