@@ -1,0 +1,25 @@
+name: two-job-probe
+# Two jobs, deliberately of different lengths.
+#
+# The point is to separate two questions that a single-job workflow cannot tell apart:
+#   - can a job's log be read while THAT JOB is running?   (expect no)
+#   - can a job's log be read while the RUN is still running? (expect yes, if the job finished)
+#
+# fast finishes in ~15s; slow keeps printing for ~90s.
+on:
+  workflow_dispatch:
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: fast-step
+        run: |
+          for i in 1 2 3; do echo "fast tick $i at $(date -u +%H:%M:%S)"; sleep 4; done
+          echo "FAST DONE"
+  slow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: slow-step
+        run: |
+          for i in $(seq 1 20); do echo "slow tick $i at $(date -u +%H:%M:%S)"; sleep 4; done
+          echo "SLOW DONE"
