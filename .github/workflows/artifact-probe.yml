@@ -1,0 +1,20 @@
+name: artifact-probe
+# A workflow that produces an artifact, so gh-artifacts and gh-artifact-download have something
+# real to act on. Kept deliberately small and dependency-free.
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: make output
+        run: |
+          mkdir -p out
+          echo "artifact probe payload" > out/hello.txt
+          echo "built at $(date -u +%H:%M:%S)" >> out/hello.txt
+          ls -l out
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-output
+          path: out/
