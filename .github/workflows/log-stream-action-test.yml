@@ -19,6 +19,7 @@ jobs:
       - name: build with streaming
         uses: ./ext/actions/log-stream
         with:
+          token: ${{ github.token }}
           command: |
             echo "configure: starting"
             for i in $(seq 1 12); do
