@@ -1,0 +1,30 @@
+name: log-stream-action-test
+# Exercises the log-stream action end to end: a command that prints on a timer, streamed into a
+# check run that an outside reader polls while the job is still running.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  checks: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: checkout the extension (where the action lives)
+        uses: actions/checkout@v4
+        with:
+          repository: easydev-org/easyagent-github-ext
+          path: ext
+      - name: build with streaming
+        uses: ./ext/actions/log-stream
+        with:
+          command: |
+            echo "configure: starting"
+            for i in $(seq 1 12); do
+              echo "compile unit $i/12 at $(date -u +%H:%M:%S)"
+              sleep 5
+            done
+            echo "link: done"
+            echo "test: 42 passed"
+          interval: '4'
