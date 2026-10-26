@@ -1,10 +1,14 @@
-"""Leave a check run whose output.text is POPULATED, so a PAT can be tested against it.
+"""Keep a check run's text growing for 90 seconds, so an OUTSIDE reader can poll it mid-job.
 
-Learned the hard way in the previous run: PATCHing {"status": "completed"} with no `output` object
-CLEARS the text. So the sequence here finishes WITHOUT touching output, and then does one final
-PATCH that carries the full text alongside the completed status.
+This is the only test that answers the question: is the text readable while the job is still
+running, or does GitHub only serve it once the job completes?
 
-The point is the artifact at the end: a check run the extension can try to read.
+The workflow does nothing else, so the job is in_progress for the whole window. A reader with a
+PAT polls GET /check-runs/{id} from another machine and records what it sees.
+
+Two details learned earlier and applied here:
+  - every PATCH carries the FULL text, because output is replaced wholesale, not merged
+  - the last PATCH sets status/conclusion but still carries the text, or it would be erased
 """
 import json
 import os
@@ -33,51 +37,40 @@ def call(path, method="GET", body=None):
         return e.code, e.read().decode("utf-8", "replace")[:300]
 
 
-CR_NAME = "pat-readable-probe"
-TEXT = "\n".join([
-    "=== build log ===",
-    "step 1: configure .... ok",
-    "step 2: compile ...... ok",
-    "step 3: test ......... 42 passed",
-    "=== end ===",
-])
+CR_NAME = "live-read-probe"
 
 st, cr = call("/check-runs", "POST", {
     "name": CR_NAME,
     "head_sha": SHA,
     "status": "in_progress",
     "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    "output": {"title": "pat readable", "summary": "5 lines", "text": TEXT},
+    "output": {"title": "live", "summary": "0 lines", "text": "start"},
 })
 print("create ->", st)
 if st not in (200, 201):
     print(" ", cr)
     raise SystemExit("create failed")
 cr_id = cr["id"]
-print("check run id:", cr_id)
+# Print this early and loudly: the outside poller needs it, and buffering would hide it.
+print("CHECK_RUN_ID=%d" % cr_id, flush=True)
 
-st, d = call("/check-runs/%d" % cr_id)
-o = d.get("output") or {}
-print("self-read while in_progress: text_len=%d" % len(o.get("text") or ""))
+lines = ["start"]
+for i in range(1, 16):
+    time.sleep(6)
+    lines.append("line %02d at %s" % (i, time.strftime("%H:%M:%S", time.gmtime())))
+    st, _ = call("/check-runs/%d" % cr_id, "PATCH", {
+        "status": "in_progress",
+        "output": {"title": "live", "summary": "%d lines" % len(lines),
+                   "text": "\n".join(lines)},
+    })
+    print("patch %02d -> %s (total %d lines)" % (i, st, len(lines)), flush=True)
 
-time.sleep(3)
-
-# Finish it, carrying the SAME text in the same request. Splitting these two is what erased the
-# text last time.
+# Finish WITHOUT dropping the text.
 st, _ = call("/check-runs/%d" % cr_id, "PATCH", {
-    "status": "completed",
-    "conclusion": "success",
+    "status": "completed", "conclusion": "success",
     "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    "output": {"title": "pat readable", "summary": "5 lines", "text": TEXT},
+    "output": {"title": "live", "summary": "%d lines" % len(lines),
+               "text": "\n".join(lines)},
 })
-print("complete+text ->", st)
-
-st, d = call("/check-runs/%d" % cr_id)
-o = d.get("output") or {}
-print("self-read after completion: text_len=%d" % len(o.get("text") or ""))
-print("text:")
-for line in (o.get("text") or "(empty)").splitlines():
-    print("   ", line)
-
-print("\nCHECK_RUN_ID=%d" % cr_id)
-print("PAT_READ_TARGET=%d" % cr_id)
+print("complete ->", st, flush=True)
+print("DONE CHECK_RUN_ID=%d" % cr_id, flush=True)
