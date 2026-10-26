@@ -1,0 +1,65 @@
+name: app-push-probe
+# Can a WORKFLOW push its own log into a place a PAT can read back?
+#
+# The runner has no route into our cluster, so the log must land somewhere GitHub serves.
+# check-runs:write is the only channel with room (65535 chars), and creating one needs either a
+# GitHub App or — this is the question — the workflow's own GITHUB_TOKEN with checks: write.
+#
+# If this works, "live-ish" logs need no cookie and no App: the workflow PATCHes its own check run
+# every few seconds and the extension reads it with its PAT.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  checks: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: push progress into a check run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eux
+          api="https://api.github.com/repos/$REPO"
+
+          # 1. create our own check run
+          id=$(curl -sS -X POST "$api/check-runs" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -d "{\"name\":\"app-push-probe\",\"head_sha\":\"$SHA\",\"status\":\"in_progress\",\"started_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"output\":{\"title\":\"streaming\",\"summary\":\"started\",\"text\":\"line 0\"}}" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+          echo "check run id: $id"
+
+          # 2. PATCH it while the step keeps working — this is the "live" part
+          body=""
+          for i in $(seq 1 5); do
+            body="$body
+tick $i at $(date -u +%H:%M:%S)"
+            python3 - "$id" "$body" <<'PY'
+          import json,sys,urllib.request,os
+          cr, text = sys.argv[1], sys.argv[2]
+          req = urllib.request.Request(
+              "https://api.github.com/repos/%s/check-runs/%s" % (os.environ["REPO"], cr),
+              method="PATCH",
+              data=json.dumps({"output": {"title": "streaming", "summary": "live", "text": text}}).encode(),
+              headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                       "Accept": "application/vnd.github+json",
+                       "Content-Type": "application/json"})
+          r = urllib.request.urlopen(req, timeout=30)
+          print("  patch %s -> %s" % (cr, r.status))
+          PY
+            sleep 4
+          done
+
+          # 3. finish it
+          curl -sS -X PATCH "$api/check-runs/$id" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -d "{\"status\":\"completed\",\"conclusion\":\"success\",\"completed_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+            -o /dev/null -w "complete -> %{http_code}\n"
+
+          echo "CHECK_RUN_ID=$id"
