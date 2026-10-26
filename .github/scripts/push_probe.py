@@ -1,13 +1,10 @@
-"""Write to output.text, then READ IT BACK IMMEDIATELY, from inside the workflow.
+"""Leave a check run whose output.text is POPULATED, so a PAT can be tested against it.
 
-The previous run reported patch -> 200 five times, summary came back, and text came back None. Two
-explanations fit that:
+Learned the hard way in the previous run: PATCHing {"status": "completed"} with no `output` object
+CLEARS the text. So the sequence here finishes WITHOUT touching output, and then does one final
+PATCH that carries the full text alongside the completed status.
 
-    a) the write went somewhere else (a field I did not mean), or
-    b) GitHub does not return output.text on read, at least not to this token.
-
-Only a read from the SAME token that wrote it separates them. So this creates a check run, patches
-each field separately, and GETs after each write, printing exactly what came back.
+The point is the artifact at the end: a check run the extension can try to read.
 """
 import json
 import os
@@ -36,68 +33,51 @@ def call(path, method="GET", body=None):
         return e.code, e.read().decode("utf-8", "replace")[:300]
 
 
-def show(tag, cr_id):
-    """Print exactly what a GET returns for output, field by field."""
-    st, d = call("/check-runs/%d" % cr_id)
-    o = d.get("output") or {}
-    print("%-18s GET=%s title=%r summary_len=%d text_len=%d text=%r"
-          % (tag, st, o.get("title"), len(o.get("summary") or ""),
-             len(o.get("text") or ""), (o.get("text") or "")[:60]))
-    return d
+CR_NAME = "pat-readable-probe"
+TEXT = "\n".join([
+    "=== build log ===",
+    "step 1: configure .... ok",
+    "step 2: compile ...... ok",
+    "step 3: test ......... 42 passed",
+    "=== end ===",
+])
 
-
-print("repo=%s sha=%s" % (REPO, SHA[:10]))
-
-# --- 1. create with ALL three fields set -------------------------------------
 st, cr = call("/check-runs", "POST", {
-    "name": "text-where-probe",
+    "name": CR_NAME,
     "head_sha": SHA,
     "status": "in_progress",
     "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    "output": {
-        "title": "TITLE-AT-CREATE",
-        "summary": "SUMMARY-AT-CREATE",
-        "text": "TEXT-AT-CREATE-MARKER",
-    },
+    "output": {"title": "pat readable", "summary": "5 lines", "text": TEXT},
 })
 print("create ->", st)
 if st not in (200, 201):
     print(" ", cr)
-    raise SystemExit("cannot create")
+    raise SystemExit("create failed")
 cr_id = cr["id"]
 print("check run id:", cr_id)
-show("after create", cr_id)
 
-# --- 2. patch ONLY text, then read ------------------------------------------
+st, d = call("/check-runs/%d" % cr_id)
+o = d.get("output") or {}
+print("self-read while in_progress: text_len=%d" % len(o.get("text") or ""))
+
+time.sleep(3)
+
+# Finish it, carrying the SAME text in the same request. Splitting these two is what erased the
+# text last time.
 st, _ = call("/check-runs/%d" % cr_id, "PATCH", {
-    "output": {"title": "TITLE-PATCH-1", "summary": "SUMMARY-PATCH-1",
-               "text": "TEXT-PATCH-1-MARKER"},
-})
-print("\npatch1 ->", st)
-show("after patch1", cr_id)
-
-# --- 3. patch summary only, leaving text out — does text survive? -----------
-st, _ = call("/check-runs/%d" % cr_id, "PATCH", {
-    "output": {"title": "TITLE-PATCH-2", "summary": "SUMMARY-PATCH-2"},
-})
-print("\npatch2 (no text field) ->", st)
-show("after patch2", cr_id)
-
-# --- 4. how long is text allowed? try a long one ----------------------------
-big = "\n".join("log line %05d" % i for i in range(2000))
-print("\nlong text chars:", len(big))
-st, res = call("/check-runs/%d" % cr_id, "PATCH", {
-    "output": {"title": "TITLE-PATCH-3", "summary": "SUMMARY-PATCH-3", "text": big},
-})
-print("patch3 (long) ->", st, "" if st == 200 else res)
-show("after patch3", cr_id)
-
-# --- 5. finish, then read again --------------------------------------------
-st, _ = call("/check-runs/%d" % cr_id, "PATCH", {
-    "status": "completed", "conclusion": "success",
+    "status": "completed",
+    "conclusion": "success",
     "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "output": {"title": "pat readable", "summary": "5 lines", "text": TEXT},
 })
-print("\ncomplete ->", st)
-show("after complete", cr_id)
+print("complete+text ->", st)
+
+st, d = call("/check-runs/%d" % cr_id)
+o = d.get("output") or {}
+print("self-read after completion: text_len=%d" % len(o.get("text") or ""))
+print("text:")
+for line in (o.get("text") or "(empty)").splitlines():
+    print("   ", line)
 
 print("\nCHECK_RUN_ID=%d" % cr_id)
+print("PAT_READ_TARGET=%d" % cr_id)
